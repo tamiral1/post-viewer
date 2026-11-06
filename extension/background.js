@@ -1,6 +1,6 @@
 // Sends top-level visits to IG / FB over to Post Viewer.
 // Only the main frame is touched, so embeds inside other pages keep working.
-const VIEWER = 'https://tamiral1.github.io/post-viewer/';
+const VIEWER = 'https://post-viewer-ten.vercel.app/';
 const HOSTS = ['facebook.com', 'fb.com', 'fb.watch', 'instagram.com', 'instagr.am'];
 const isTarget = h => HOSTS.some(d => h === d || h.endsWith('.' + d));
 
