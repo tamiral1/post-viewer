@@ -46,12 +46,12 @@ body {
 h1 { font: 700 26px/1.1 var(--display); margin: 0; letter-spacing: -0.01em; }
 .sub { color: var(--muted); margin: 4px 0 0; font-size: 14px; }
 form { display: flex; gap: 8px; }
-input[type=url] {
+input[type=text] {
   flex: 1; min-width: 0; font: inherit; color: var(--fg);
   background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
   padding: 11px 13px;
 }
-input[type=url]:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: transparent; }
+input[type=text]:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: transparent; }
 button {
   font: 600 14px var(--body); border: 0; border-radius: 10px; cursor: pointer;
   padding: 0 18px; background: var(--accent); color: var(--accent-fg);
@@ -92,7 +92,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
   </header>
 
   <form id="f">
-    <input id="u" type="url" placeholder="Paste a post link" autocomplete="off" required>
+    <input id="u" type="text" inputmode="url" placeholder="Paste any IG or FB link" autocomplete="off" autocapitalize="off" spellcheck="false" required>
     <button type="submit">Open</button>
   </form>
   <p class="msg" id="msg" hidden></p>
@@ -100,15 +100,17 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
   <section class="stage" id="stage" hidden>
     <div class="meta">
       <span class="tag" id="tag"></span>
+      <button class="ghost" id="reload" type="button">Reload</button>
       <button class="ghost" id="clear" type="button">Clear</button>
     </div>
     <div class="frame"><iframe id="frame" title="Embedded post" allowfullscreen
+      sandbox="allow-scripts allow-same-origin allow-forms allow-presentation"
       allow="autoplay; clipboard-write; encrypted-media; picture-in-picture; web-share"></iframe></div>
     <p class="hint" id="hint"></p>
   </section><style>[hidden]{display:none!important}</style>
 
   <div class="empty" id="empty">
-    Works with IG posts and reels, and FB posts, photos, videos and reels.
+    Works with IG and FB posts, reels, videos, photos, profiles and pages. Stories can’t be embedded, so those show the profile instead.
     Tip: paste anywhere on this page and it opens right away.
   </div>
 
@@ -121,47 +123,93 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 <script>
 const $ = id => document.getElementById(id);
 const KEY = 'postviewer.recent';
+const CUR = 'postviewer.current';
 
-function parse(raw) {
+const IG_RESERVED = new Set(['explore','accounts','direct','stories','reels','reel','p','tv','share','tags',
+  'locations','about','developer','legal','privacy','web','challenge','emails','nametag','session']);
+const FB_NOT_PAGE = new Set(['watch','photo','photo.php','permalink.php','story.php','groups','events',
+  'marketplace','share','gaming','hashtag','stories','reel','reels','video.php','login','login.php']);
+
+function parse(raw, depth = 0) {
+  if (depth > 4) return { error: 'That link redirects too many times.' };
   let s = (raw || '').trim();
-  const found = s.match(/https?:\/\/\S+/);
+  const found = s.match(/https?:\/\/[^\s<>"']+/i) || s.match(/\b(?:[\w-]+\.)?(?:instagram\.com|instagr\.am|facebook\.com|fb\.com|fb\.watch)\/[^\s<>"']*/i);
   if (found) s = found[0];
   if (!s) return null;
   if (!/^https?:\/\//i.test(s)) s = 'https://' + s;
   let u;
   try { u = new URL(s); } catch { return null; }
-  const host = u.hostname.replace(/^(www\.|m\.|web\.|l\.)/, '');
+  const host = u.hostname.toLowerCase().replace(/^(www|m|web|l|lm|mbasic|touch|mobile|business)\./, '');
 
-  // Facebook outbound redirect wrapper (l.facebook.com/l.php?u=…)
-  if (host === 'facebook.com' && u.pathname === '/l.php' && u.searchParams.get('u')) {
-    return parse(u.searchParams.get('u'));
-  }
+  // Outbound redirect wrappers (l.facebook.com/l.php?u=…, l.instagram.com/?u=…)
+  const wrapped = u.searchParams.get('u');
+  if (wrapped && (u.pathname === '/l.php' || /^l\./i.test(u.hostname))) return parse(wrapped, depth + 1);
 
   if (host === 'instagram.com' || host === 'instagr.am') {
-    const m = u.pathname.match(/\/(p|reel|reels|tv)\/([A-Za-z0-9_-]+)/);
-    if (!m) return { error: 'That IG link isn’t a post or reel. Profiles and stories can’t be embedded.' };
-    const kind = m[1] === 'reels' ? 'reel' : m[1];
-    const clean = `https://www.instagram.com/${kind}/${m[2]}/`;
-    return { platform: 'instagram', clean, embed: clean + 'embed/captioned/', height: 760 };
+    const parts = u.pathname.split('/').filter(Boolean);
+    const next = u.searchParams.get('next');
+    if (parts[0] === 'accounts' && next) {            // login-wall links keep the real target in ?next=
+      return parse('https://www.instagram.com' + (next.startsWith('/') ? next : '/' + next), depth + 1);
+    }
+    const i = parts.findIndex(p => ['p', 'reel', 'reels', 'tv'].includes(p));
+    if (i >= 0 && parts[i + 1]) {
+      const kind = parts[i] === 'reels' ? 'reel' : parts[i];
+      const clean = `https://www.instagram.com/${kind}/${parts[i + 1]}/`;
+      const share = parts[0] === 'share';
+      return { platform: 'instagram', clean, embed: clean + 'embed/captioned/', height: 760,
+        note: share ? 'Share links often can’t be embedded. If it’s blank, ask the sender for the direct post link.'
+          : kind === 'p' ? '' : 'Some reels only show the cover here. The play button can’t open IG from this page, by design.' };
+    }
+    if (parts[0] === 'share' && parts[1]) {            // /share/<id> with no kind
+      const clean = `https://www.instagram.com/p/${parts[1]}/`;
+      return { platform: 'instagram', clean, embed: clean + 'embed/captioned/', height: 760,
+        note: 'Share links often can’t be embedded. If it’s blank, ask the sender for the direct post link.' };
+    }
+    if (parts[0] === 'stories' && parts[1] && parts[1] !== 'highlights') {
+      const clean = `https://www.instagram.com/${parts[1]}/`;
+      return { platform: 'instagram', clean, embed: clean + 'embed/', height: 760,
+        note: 'Stories can’t be embedded, so this shows the profile instead.' };
+    }
+    if (parts[0] && !IG_RESERVED.has(parts[0].toLowerCase())) {
+      const clean = `https://www.instagram.com/${parts[0]}/`;
+      return { platform: 'instagram', clean, embed: clean + 'embed/', height: 760,
+        note: 'Showing the profile. Open a specific post link to see just that post.' };
+    }
+    return { error: 'I couldn’t find a post, reel or profile in that IG link.' };
   }
 
   if (host === 'facebook.com' || host === 'fb.com' || host === 'fb.watch') {
     u.hash = '';
-    // keep only params that identify the post
-    const keep = ['story_fbid', 'id', 'v', 'fbid', 'set'];
+    if (host !== 'fb.watch') u.hostname = 'www.facebook.com';
+    const keep = ['story_fbid', 'id', 'v', 'fbid', 'set', 'multi_permalinks', 'substory_index'];
     [...u.searchParams.keys()].forEach(k => { if (!keep.includes(k)) u.searchParams.delete(k); });
+    const segs = u.pathname.split('/').filter(Boolean);
+    if (host !== 'fb.watch' && !segs.length) return { error: 'I couldn’t find a post or page in that FB link.' };
+    if (segs[0] === 'stories') return { error: 'FB stories can’t be embedded.' };
     const clean = u.toString();
-    const isVideo = host === 'fb.watch' || /\/(videos|reel|watch)\b/.test(u.pathname) || u.searchParams.has('v');
+    const enc = encodeURIComponent(clean);
+    const isVideo = host === 'fb.watch' || /\/(videos|reel|reels|watch)\b/.test(u.pathname) || u.searchParams.has('v');
+    const isPage = !isVideo && (segs[0] === 'pages' || (segs[0] === 'profile.php' && !u.searchParams.has('story_fbid'))
+      || (segs.length === 1 && !FB_NOT_PAGE.has(segs[0])));
+    if (isPage) {
+      return { platform: 'facebook', clean, height: 700,
+        embed: `https://www.facebook.com/plugins/page.php?href=${enc}&tabs=timeline&width=500&height=700&small_header=false&adapt_container_width=true`,
+        note: 'Showing the page. Only public pages show up here.' };
+    }
     const plugin = isVideo ? 'video.php' : 'post.php';
-    const embed = `https://www.facebook.com/plugins/${plugin}?href=${encodeURIComponent(clean)}&show_text=true&width=500`;
-    return { platform: 'facebook', clean, embed, height: isVideo ? 640 : 760,
-      note: /\/share\//.test(u.pathname) ? 'Share links sometimes don’t embed. If it’s blank, ask the sender for the full post link (the one with /posts/ or /videos/).' : '' };
+    const note = /\/share\//.test(u.pathname)
+      ? 'Share links sometimes don’t embed. If it’s blank, ask the sender for the full post link (the one with /posts/ or /videos/).'
+      : segs[0] === 'groups' ? 'Group posts usually don’t embed unless the group is public.' : '';
+    return { platform: 'facebook', clean, height: isVideo ? 640 : 760, note,
+      embed: `https://www.facebook.com/plugins/${plugin}?href=${enc}&show_text=true&width=500` };
   }
-  return { error: 'Only IG and FB post links are supported.' };
+  return { error: 'Only IG and FB links are supported.' };
 }
 
 function loadRecent() { try { return JSON.parse(localStorage.getItem(KEY)) || []; } catch { return []; } }
 function saveRecent(list) { try { localStorage.setItem(KEY, JSON.stringify(list.slice(0, 12))); } catch {} }
+function setCurrent(v) { try { v ? localStorage.setItem(CUR, v) : localStorage.removeItem(CUR); } catch {} }
+function getCurrent() { try { return localStorage.getItem(CUR); } catch { return null; } }
 
 function renderRecent() {
   const list = loadRecent();
@@ -178,7 +226,7 @@ function renderRecent() {
   });
 }
 
-function show(raw) {
+function show(raw, opts = {}) {
   const r = parse(raw);
   $('msg').hidden = true;
   if (!r || r.error) {
@@ -193,23 +241,49 @@ function show(raw) {
   $('hint').hidden = !r.note;
   $('stage').hidden = false;
   $('empty').hidden = true;
+  setCurrent(r.clean);                    // survives a refresh; nothing goes in the page address
+  if (opts.restore) return;
   const list = loadRecent().filter(x => x.clean !== r.clean);
   list.unshift({ platform: r.platform, clean: r.clean });
   saveRecent(list); renderRecent();
 }
 
+// Links handed over by the redirect extension arrive base64-encoded in the hash.
+// Read it, then wipe it from the address bar straight away.
+function takeHash() {
+  const h = location.hash.slice(1);
+  if (!h) return null;
+  history.replaceState(null, '', location.pathname + location.search);
+  try {
+    const b = h.replace(/-/g, '+').replace(/_/g, '/');
+    const bin = atob(b + '='.repeat((4 - b.length % 4) % 4));
+    return new TextDecoder().decode(Uint8Array.from(bin, c => c.charCodeAt(0)));
+  } catch { return null; }
+}
+function openFromHash() {
+  const url = takeHash();
+  if (url) { $('u').value = url; show(url); return true; }
+  return false;
+}
+
 $('f').addEventListener('submit', e => { e.preventDefault(); show($('u').value); });
+$('reload').addEventListener('click', () => { const f = $('frame'); const s = f.src; f.src = 'about:blank'; setTimeout(() => { f.src = s; }, 50); });
 $('clear').addEventListener('click', () => {
   $('frame').src = 'about:blank'; $('stage').hidden = true; $('empty').hidden = false;
-  $('u').value = ''; $('u').focus();
+  setCurrent(null); $('u').value = ''; $('u').focus();
 });
 document.addEventListener('paste', e => {
   if (e.target === $('u')) { setTimeout(() => show($('u').value), 0); return; }
   const t = (e.clipboardData || window.clipboardData).getData('text');
   if (t) { $('u').value = t.trim(); show(t); }
 });
+window.addEventListener('hashchange', openFromHash);
 
 renderRecent();
+if (!openFromHash()) {
+  const last = getCurrent();
+  if (last) { $('u').value = last; show(last, { restore: true }); }
+}
 </script>
 </body>
 </html>
