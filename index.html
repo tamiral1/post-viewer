@@ -96,6 +96,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
     <button type="submit">Open</button>
   </form>
   <p class="msg" id="msg" hidden></p>
+  <p class="hint" id="wait" hidden>Looking up the post…</p>
 
   <section class="stage" id="stage" hidden>
     <div class="meta">
@@ -157,7 +158,7 @@ function parse(raw, depth = 0) {
       const clean = `https://www.instagram.com/${kind}/${parts[i + 1]}/`;
       const share = parts[0] === 'share';
       return { platform: 'instagram', clean, embed: clean + 'embed/captioned/', height: 760,
-        note: share ? 'Share links often can’t be embedded. If it’s blank, ask the sender for the direct post link.'
+        note: share ? 'This is a share link, which often can’t be embedded. If it’s blank, open it from the link itself (with the extension on) or ask for the direct post link.'
           : kind === 'p' ? '' : 'Some reels only show the cover here. The play button can’t open IG from this page, by design.' };
     }
     if (parts[0] === 'share' && parts[1]) {            // /share/<id> with no kind
@@ -198,7 +199,7 @@ function parse(raw, depth = 0) {
     }
     const plugin = isVideo ? 'video.php' : 'post.php';
     const note = /\/share\//.test(u.pathname)
-      ? 'Share links sometimes don’t embed. If it’s blank, ask the sender for the full post link (the one with /posts/ or /videos/).'
+      ? 'This is a share link, and FB can’t embed those directly, so it will likely say the post is unavailable. Open it by clicking the link itself (with the extension on), or ask for the direct link (/reel/, /posts/ or /videos/).'
       : segs[0] === 'groups' ? 'Group posts usually don’t embed unless the group is public.' : '';
     return { platform: 'facebook', clean, height: isVideo ? 640 : 760, note,
       embed: `https://www.facebook.com/plugins/${plugin}?href=${enc}&show_text=true&width=500` };
@@ -228,7 +229,7 @@ function renderRecent() {
 
 function show(raw, opts = {}) {
   const r = parse(raw);
-  $('msg').hidden = true;
+  $('msg').hidden = true; $('wait').hidden = true;
   if (!r || r.error) {
     $('msg').textContent = r ? r.error : 'That doesn’t look like a link. Paste the full URL you were sent.';
     $('msg').hidden = false; return;
@@ -251,19 +252,27 @@ function show(raw, opts = {}) {
 // Links handed over by the redirect extension arrive base64-encoded in the hash.
 // Read it, then wipe it from the address bar straight away.
 function takeHash() {
-  const h = location.hash.slice(1);
+  let h = location.hash.slice(1);
   if (!h) return null;
   history.replaceState(null, '', location.pathname + location.search);
+  const pending = h[0] === '~';          // '~' = the extension is still looking up a short link
+  if (pending) h = h.slice(1);
   try {
     const b = h.replace(/-/g, '+').replace(/_/g, '/');
     const bin = atob(b + '='.repeat((4 - b.length % 4) % 4));
-    return new TextDecoder().decode(Uint8Array.from(bin, c => c.charCodeAt(0)));
+    return { pending, url: new TextDecoder().decode(Uint8Array.from(bin, c => c.charCodeAt(0))) };
   } catch { return null; }
 }
 function openFromHash() {
-  const url = takeHash();
-  if (url) { $('u').value = url; show(url); return true; }
-  return false;
+  const got = takeHash();
+  if (!got) return false;
+  $('u').value = got.url;
+  if (got.pending) {
+    $('wait').hidden = false; $('msg').hidden = true; $('stage').hidden = true; $('empty').hidden = true;
+    clearTimeout(window.__waitT);
+    window.__waitT = setTimeout(() => { if (!$('wait').hidden) show(got.url); }, 12000);   // extension never answered
+  } else show(got.url);
+  return true;
 }
 
 $('f').addEventListener('submit', e => { e.preventDefault(); show($('u').value); });

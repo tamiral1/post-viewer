@@ -1,8 +1,15 @@
 {
   "manifest_version": 3,
   "name": "Post Viewer Redirect",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Opens IG and FB links in Post Viewer instead of the blocked site.",
   "permissions": ["webNavigation"],
+  "host_permissions": [
+    "https://*.facebook.com/*",
+    "https://fb.com/*",
+    "https://fb.watch/*",
+    "https://fb.me/*",
+    "https://*.instagram.com/*"
+  ],
   "background": { "service_worker": "background.js" }
 }
