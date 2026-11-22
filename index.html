@@ -101,6 +101,8 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
   <section class="stage" id="stage" hidden>
     <div class="meta">
       <span class="tag" id="tag"></span>
+      <button class="ghost" id="taller" type="button">Taller</button>
+      <button class="ghost" id="shorter" type="button">Shorter</button>
       <button class="ghost" id="reload" type="button">Reload</button>
       <button class="ghost" id="clear" type="button">Clear</button>
     </div>
@@ -157,23 +159,23 @@ function parse(raw, depth = 0) {
       const kind = parts[i] === 'reels' ? 'reel' : parts[i];
       const clean = `https://www.instagram.com/${kind}/${parts[i + 1]}/`;
       const share = parts[0] === 'share';
-      return { platform: 'instagram', clean, embed: clean + 'embed/captioned/', height: 760,
+      return { platform: 'instagram', clean, embed: clean + 'embed/captioned/', h: () => 760,
         note: share ? 'This is a share link, which often can’t be embedded. If it’s blank, open it from the link itself (with the extension on) or ask for the direct post link.'
           : kind === 'p' ? '' : 'Some reels only show the cover here. The play button can’t open IG from this page, by design.' };
     }
     if (parts[0] === 'share' && parts[1]) {            // /share/<id> with no kind
       const clean = `https://www.instagram.com/p/${parts[1]}/`;
-      return { platform: 'instagram', clean, embed: clean + 'embed/captioned/', height: 760,
+      return { platform: 'instagram', clean, embed: clean + 'embed/captioned/', h: () => 760,
         note: 'Share links often can’t be embedded. If it’s blank, ask the sender for the direct post link.' };
     }
     if (parts[0] === 'stories' && parts[1] && parts[1] !== 'highlights') {
       const clean = `https://www.instagram.com/${parts[1]}/`;
-      return { platform: 'instagram', clean, embed: clean + 'embed/', height: 760,
+      return { platform: 'instagram', clean, embed: clean + 'embed/', h: () => 760,
         note: 'Stories can’t be embedded, so this shows the profile instead.' };
     }
     if (parts[0] && !IG_RESERVED.has(parts[0].toLowerCase())) {
       const clean = `https://www.instagram.com/${parts[0]}/`;
-      return { platform: 'instagram', clean, embed: clean + 'embed/', height: 760,
+      return { platform: 'instagram', clean, embed: clean + 'embed/', h: () => 760,
         note: 'Showing the profile. Open a specific post link to see just that post.' };
     }
     return { error: 'I couldn’t find a post, reel or profile in that IG link.' };
@@ -193,15 +195,18 @@ function parse(raw, depth = 0) {
     const isPage = !isVideo && (segs[0] === 'pages' || (segs[0] === 'profile.php' && !u.searchParams.has('story_fbid'))
       || (segs.length === 1 && !FB_NOT_PAGE.has(segs[0])));
     if (isPage) {
-      return { platform: 'facebook', clean, height: 700,
+      return { platform: 'facebook', clean, h: () => 700,
         embed: `https://www.facebook.com/plugins/page.php?href=${enc}&tabs=timeline&width=500&height=700&small_header=false&adapt_container_width=true`,
         note: 'Showing the page. Only public pages show up here.' };
     }
     const plugin = isVideo ? 'video.php' : 'post.php';
+    const isReel = /\/(reel|reels)\b/.test(u.pathname);
+    // reels are portrait (about 16:9 tall, plus about 240px of header, caption and buttons); other videos are usually landscape
+    const h = !isVideo ? () => 760 : isReel ? w => Math.round(w * 16 / 9 + 245) : w => Math.round(w * 9 / 16 + 250);
     const note = /\/share\//.test(u.pathname)
       ? 'This is a share link, and FB can’t embed those directly, so it will likely say the post is unavailable. Open it by clicking the link itself (with the extension on), or ask for the direct link (/reel/, /posts/ or /videos/).'
       : segs[0] === 'groups' ? 'Group posts usually don’t embed unless the group is public.' : '';
-    return { platform: 'facebook', clean, height: isVideo ? 640 : 760, note,
+    return { platform: 'facebook', clean, h, note,
       embed: `https://www.facebook.com/plugins/${plugin}?href=${enc}&show_text=true&width=500` };
   }
   return { error: 'Only IG and FB links are supported.' };
@@ -227,6 +232,16 @@ function renderRecent() {
   });
 }
 
+function setHeight(px) { $('frame').style.height = Math.max(300, Math.min(4000, Math.round(px))) + 'px'; }
+// IG tells the page how tall the post is; use it so nothing is cut off
+window.addEventListener('message', e => {
+  if (e.origin !== 'https://www.instagram.com' || e.source !== $('frame').contentWindow) return;
+  try {
+    const m = typeof e.data === 'string' ? JSON.parse(e.data) : e.data;
+    if (m && m.type === 'MEASURE' && m.details && m.details.height) setHeight(m.details.height + 2);
+  } catch {}
+});
+
 function show(raw, opts = {}) {
   const r = parse(raw);
   $('msg').hidden = true; $('wait').hidden = true;
@@ -236,12 +251,14 @@ function show(raw, opts = {}) {
   }
   $('tag').textContent = r.platform === 'instagram' ? 'IG' : 'FB';
   $('tag').className = 'tag ' + r.platform;
-  $('frame').style.height = r.height + 'px';
-  $('frame').src = r.embed;
   $('hint').textContent = r.note || '';
   $('hint').hidden = !r.note;
   $('stage').hidden = false;
   $('empty').hidden = true;
+  // match the embed to the space available, then size the box to the post
+  const w = Math.max(250, Math.min(500, $('frame').parentElement.clientWidth - 4));
+  setHeight(r.h(w));
+  $('frame').src = r.embed.replace('width=500', 'width=' + w);
   setCurrent(r.clean);                    // survives a refresh; nothing goes in the page address
   if (opts.restore) return;
   const list = loadRecent().filter(x => x.clean !== r.clean);
@@ -276,6 +293,9 @@ function openFromHash() {
 }
 
 $('f').addEventListener('submit', e => { e.preventDefault(); show($('u').value); });
+const nudge = d => () => setHeight((parseInt($('frame').style.height, 10) || 700) + d);
+$('taller').addEventListener('click', nudge(150));
+$('shorter').addEventListener('click', nudge(-150));
 $('reload').addEventListener('click', () => { const f = $('frame'); const s = f.src; f.src = 'about:blank'; setTimeout(() => { f.src = s; }, 50); });
 $('clear').addEventListener('click', () => {
   $('frame').src = 'about:blank'; $('stage').hidden = true; $('empty').hidden = false;
